@@ -1,0 +1,54 @@
+name: Stream Rules (TTSR)
+description: Coding agent with time-traveling stream rules — project rules stay dormant until the live token stream violates them, then the turn aborts, the rule is injected as a system reminder, and the request retries from the same point.
+order: 6
+# User agent preset for @hy-sde-org/dsh-stream-rules — "abort, inject, retry".
+#
+# Install: copy this directory to ~/.dsh/.agent-presets/<id>/ (pick any id),
+# then select the preset in the Web UI preset picker (or `dsh agent` CLI).
+#
+# The guard adds exactly one row beside whatever else you normally use. Rules
+# live per project under <cwd>/.dsh/rules/**/*.md (re-scanned every turn,
+# mtime-gated); inline rules in this file are an alternative. The two inline
+# examples below are placeholders — delete them and write your own.
+#
+# Copy any other rows from the preset you normally use (bash, todo, ask-user,
+# skills, ...) next to these; only the stream-rules row is special.
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      You are a coding agent powered by the {{model}} model. Your working
+      directory is {{cwd}}. Project rules in <cwd>/.dsh/rules/ are enforced by
+      the harness at runtime: when you violate one, your output is interrupted
+      and the rule is delivered to you as a system reminder — comply with it
+      and continue from where you were.
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# The stream-rules guard: no per-turn context tax — a rule participates only
+# the moment it is violated. `contextMode: keep` leaves the interrupted output
+# visible and appends the reminder; `discard` replaces the aborted step so the
+# retry regenerates from a clean context. `repeatMode: once` fires each rule
+# once per session; `gap` re-arms after `repeatGap` turns.
+- id: stream-rules
+  name: '@hy-sde-org/dsh-stream-rules'
+  config:
+    contextMode: keep
+    interruptMode: always
+    repeatMode: once
+    repeatGap: 10
+    rules:
+      - name: no-debugger-statement
+        content: Never leave a `debugger;` statement behind in committed code.
+        condition: 'debugger\s*;?'
+        scope: [text, thinking, tool:edit, tool:write]
+        interruptMode: always
+      - name: no-secret-in-tool-args
+        content: Never pass a real secret or API key as a tool-call argument.
+        condition: '(sk-[A-Za-z0-9]{16,}|api[_-]?key\s*[:=]\s*["'"'"'][^"'"'"']+)'
+        scope: ['tool']
+        interruptMode: never

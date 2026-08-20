@@ -1,0 +1,14 @@
+# @hy-sde-org/dsh-stream-rules — install surface for the stream-rules guard.
+#
+# DeepSeek Harness ships no stream-rules guard: nothing on the official
+# releases collides with the `stream-rules` name, so installing this package
+# alone would never change behavior. The bundle stays out of the way and
+# inserts no rows: the guard mounts at the AGENT plane — one row in a user
+# agent preset — where it observes that session's token stream, aborts
+# violating turns, and retries with the rule in context.
+#
+# See the README "Example preset" section and `examples/agent-preset/` in this
+# package for the ready-to-copy preset (it adds the `stream-rules` row next to
+# the rows you normally use; put your project rules in <cwd>/.dsh/rules/).
+#
+# Nothing to patch on stock releases.
