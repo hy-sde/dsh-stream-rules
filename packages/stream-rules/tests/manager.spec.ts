@@ -131,6 +131,23 @@ describe('TtsrManager matching', () => {
     const matched = manager.checkDelta('forbidden', { source: 'thinking', streamKey: 'thinking' })
     expect(matched.map(r => r.name)).toEqual(['rule-a'])
   })
+
+  it('buffers content that streams before any rule exists and matches it via recheck (reload race)', () => {
+    const manager = new TtsrManager(undefined, silentLogger)
+    // Content streams while the rule table is empty (a reload's file I/O window).
+    expect(manager.checkDelta('let me mention forbidden stuff', { source: 'text', streamKey: 'text' })).toEqual([])
+    // The rule table swap empties the live buffers; the plugin snapshots first.
+    const prior = manager.snapshotBuffers()
+    manager.clearRules()
+    manager.addRule(rule())
+    // Without the snapshot, no live buffer remains to match — with it, the
+    // streamed text still triggers exactly like a normal in-stream match.
+    expect(manager.recheckBuffers()).toEqual([])
+    const hits = manager.recheckBuffers(prior)
+    expect(hits).toHaveLength(1)
+    expect(hits[0]!.rule.name).toBe('rule-a')
+    expect(hits[0]!.context).toEqual({ source: 'text', streamKey: 'text' })
+  })
 })
 
 describe('TtsrManager repeat gating', () => {

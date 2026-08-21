@@ -282,6 +282,13 @@ export function apply(ctx: Context, config: Config): void {
     const previous = state.fileRules
     const next = new Map<string, Rule>()
 
+    // Inline rules are registered before any file I/O, so an inline-only
+    // configuration is live from the very first chunk with no async window.
+    manager.clearRules()
+    for (const rule of inlineRules) {
+      manager.addRule(rule)
+    }
+
     const dir = resolveRulesDir(state)
     state.rulesDir = dir
     if (dir) {
@@ -310,12 +317,32 @@ export function apply(ctx: Context, config: Config): void {
 
     state.fileRules = next
 
+    // Snapshot what already streamed while the file pass was awaiting I/O, so
+    // content is not silently dropped when the rule table swaps beneath it.
+    const prior = manager.snapshotBuffers()
+
     // Rebuild the manager's table; injection records are preserved inside the
     // manager (clearRules does not touch them).
     manager.clearRules()
-    for (const rule of [...inlineRules, ...next.values()]) {
+    for (const rule of inlineRules) {
       manager.addRule(rule)
     }
+    for (const rule of next.values()) {
+      manager.addRule(rule)
+    }
+
+    // Re-check the pre-reload buffers against the now-live rules and route any
+    // match exactly like a normal stream match.
+    const byContext = new Map<TtsrMatchContext, Rule[]>()
+    for (const hit of manager.recheckBuffers(prior)) {
+      const rules = byContext.get(hit.context) ?? []
+      rules.push(hit.rule)
+      byContext.set(hit.context, rules)
+    }
+    for (const [context, rules] of byContext) {
+      handleMatches(state, rules, context)
+    }
+
     ctx.logger.debug('stream-rules: refreshed rule set', {
       ruleCount: manager.getRules().length,
       session: state.session.id,
@@ -539,7 +566,10 @@ export function apply(ctx: Context, config: Config): void {
   // ---- the live stream ----
   ctx.on('session/event', (session, event) => {
     const state = sessions.get(session)
-    if (!state || !enabled || !state.manager.hasRules()) return
+    // Note: no `hasRules()` gate here on purpose — chunks must keep buffering
+    // while a rule-table reload is in flight so the reload's `recheckBuffers`
+    // can still see and match content that streamed during the window.
+    if (!state || !enabled) return
 
     switch (event.type) {
       case 'turn/start': {

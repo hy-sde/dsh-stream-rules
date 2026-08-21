@@ -119,6 +119,7 @@ export class TtsrManager {
   readonly #rules = new Map<string, TtsrEntry>()
   readonly #injectionRecords = new Map<string, InjectionRecord>()
   readonly #buffers = new Map<string, string>()
+  readonly #bufferContexts = new Map<string, TtsrMatchContext>()
   #messageCount = 0
   #canMatchText = false
   #canMatchThinking = false
@@ -387,6 +388,7 @@ export class TtsrManager {
   clearRules(): void {
     this.#rules.clear()
     this.#buffers.clear()
+    this.#bufferContexts.clear()
     this.#canMatchText = false
     this.#canMatchThinking = false
   }
@@ -396,17 +398,21 @@ export class TtsrManager {
    *
    * Buffers are isolated by source/tool key so matches don't bleed across
    * assistant prose, reasoning text, and unrelated tool argument streams.
+   * Content is always accumulated — even before any matching rule exists — so
+   * text streamed while a rule-table reload is in flight is not silently
+   * dropped; `recheckBuffers` matches such content once the rules land.
    */
   checkDelta(delta: string, context: TtsrMatchContext): Rule[] {
+    const bufferKey = this.#bufferKey(context)
+    const nextBuffer = `${this.#buffers.get(bufferKey) ?? ''}${delta}`
+    this.#buffers.set(bufferKey, nextBuffer)
+    this.#bufferContexts.set(bufferKey, context)
     if (context.source === 'text' && !this.#canMatchText) {
       return []
     }
     if (context.source === 'thinking' && !this.#canMatchThinking) {
       return []
     }
-    const bufferKey = this.#bufferKey(context)
-    const nextBuffer = `${this.#buffers.get(bufferKey) ?? ''}${delta}`
-    this.#buffers.set(bufferKey, nextBuffer)
     return this.#matchBuffer(nextBuffer, context)
   }
 
@@ -486,6 +492,63 @@ export class TtsrManager {
   /** Reset stream buffers (called on new turn). */
   resetBuffer(): void {
     this.#buffers.clear()
+    this.#bufferContexts.clear()
+  }
+
+  /**
+   * Snapshot the current buffers and their source contexts. The plugin takes
+   * this before `clearRules()` rebuilds the rule table, then passes it to
+   * `recheckBuffers` so content that streamed while the reload was in flight
+   * is still matched once the new rules are live.
+   */
+  snapshotBuffers(): Array<{ buffer: string; context: TtsrMatchContext }> {
+    const snapshot: Array<{ buffer: string; context: TtsrMatchContext }> = []
+    for (const [bufferKey, buffer] of this.#buffers) {
+      snapshot.push({
+        buffer,
+        context: this.#bufferContexts.get(bufferKey) ?? this.#fallbackContext(bufferKey),
+      })
+    }
+    return snapshot
+  }
+
+  /** Derive a best-effort context for a buffer key recorded before tracking existed. */
+  #fallbackContext(bufferKey: string): TtsrMatchContext {
+    if (bufferKey === 'text') return { source: 'text', streamKey: 'text' }
+    if (bufferKey === 'thinking') return { source: 'thinking', streamKey: 'thinking' }
+    if (bufferKey.startsWith('tool:')) {
+      return { source: 'tool', streamKey: bufferKey, toolName: bufferKey.slice('tool:'.length) }
+    }
+    return { source: 'tool', streamKey: bufferKey }
+  }
+
+  /**
+   * Re-match a set of buffers against the current rule table without appending
+   * any new content. Used right after a rule-table rebuild so streamed text
+   * that arrived while the reload was in flight still triggers. When `prior`
+   * is given it is checked instead of the live buffers (which `clearRules`
+   * emptied). Each hit repeats the exact context the content was fed under.
+   */
+  recheckBuffers(prior?: Array<{ buffer: string; context: TtsrMatchContext }>): Array<{ rule: Rule; context: TtsrMatchContext }> {
+    if (!this.#settings.enabled || this.#rules.size === 0) {
+      return []
+    }
+    const sources: Array<{ buffer: string; context: TtsrMatchContext }> = prior ?? []
+    if (!prior) {
+      for (const [bufferKey, buffer] of this.#buffers) {
+        sources.push({
+          buffer,
+          context: this.#bufferContexts.get(bufferKey) ?? this.#fallbackContext(bufferKey),
+        })
+      }
+    }
+    const hits: Array<{ rule: Rule; context: TtsrMatchContext }> = []
+    for (const { buffer, context } of sources) {
+      for (const rule of this.#matchBuffer(buffer, context)) {
+        hits.push({ rule, context })
+      }
+    }
+    return hits
   }
 
   /** Check if any TTSR rules are registered. */
