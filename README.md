@@ -30,7 +30,7 @@ pnpm install --global @deepseek-ai/dsh
 ### Direct from npm (published)
 
 The package is published on the npm registry under the `hy-sde-org`
-organization (`@hy-sde-org/dsh-stream-rules`, version `0.1.0-rc.8`). Install
+organization (`@hy-sde-org/dsh-stream-rules`, version `0.1.1-rc.2`). Install
 it straight from npm:
 
 ```bash
