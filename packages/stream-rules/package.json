@@ -1,6 +1,6 @@
 {
   "name": "@hy-sde-org/dsh-stream-rules",
-  "version": "0.1.1-rc.2",
+  "version": "0.1.1-rc.2.1",
   "description": "Time-traveling stream rules for DeepSeek Harness — project rules stay dormant until a regex matches the live token stream, then the request is aborted, the rule injected as a system reminder, and the request retried from the same point. Zero per-turn context tax, surviving compaction.",
   "type": "module",
   "main": "./dist/index.js",
