@@ -11,4 +11,7 @@
 # package for the ready-to-copy preset (it adds the `stream-rules` row next to
 # the rows you normally use; put your project rules in <cwd>/.dsh/rules/).
 #
-# Nothing to patch on stock releases.
+# Nothing to patch on stock releases — the layer is the empty list below
+# (an absent list would fail stock's top-level-YAML-array check at boot).
+
+[]
