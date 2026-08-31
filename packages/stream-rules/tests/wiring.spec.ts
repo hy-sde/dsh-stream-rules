@@ -20,6 +20,7 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import SessionProjections from '@deepseek-ai/dsh-session-projection'
 import * as StreamRules from '../src/index.ts'
 import type { Config } from '../src/index.ts'
 import { MockAdapter, textResponse, toolCallResponse } from './mock-adapter.ts'
@@ -31,6 +32,7 @@ async function mountAgentLoopTestDependencies(ctx: Context): Promise<void> {
   await ctx.plugin(SystemPrompt, {})
   await ctx.plugin(ToolRuntime, {})
   await ctx.plugin(AgentRegistry)
+  await ctx.plugin(SessionProjections)
 }
 
 /** Temp dirs created by `harness`, removed after each test. */
