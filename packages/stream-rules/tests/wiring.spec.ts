@@ -85,14 +85,14 @@ async function settle(ctx: Context, agent: Agent, adapter: MockAdapter, expected
 
 /** All plugin-sourced user messages (the reminders this guard injects), flattened to text. */
 function plugins(agent: Agent): string[] {
-  return [...agent.session.events]
+  return [...agent.session.snapshotEvents()]
     .filter((e): e is SessionEvent<'user/message'> => e.type === 'user/message' && e.data.source.kind === 'plugin')
     .map(e => e.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('|'))
 }
 
 /** All turn-end events, as `{ kind, reason?.reason }` summaries. */
 function turnEnds(agent: Agent): unknown[] {
-  return [...agent.session.events]
+  return [...agent.session.snapshotEvents()]
     .filter((e): e is SessionEvent<'turn/end'> => e.type === 'turn/end')
     .map((e: SessionEvent<'turn/end'>) => e.data.reason)
 }
@@ -132,7 +132,7 @@ describe('stream-rules guard: interrupt + retry', () => {
       textResponse('clean answer'),
     ])
     ctx.llm.registerAdapter(['mock'], adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Write a note' }], source: { kind: 'user' } }))
     await settle(ctx, agent, adapter, 2)
 
@@ -141,7 +141,7 @@ describe('stream-rules guard: interrupt + retry', () => {
     expect(ends.filter(r => (r as { kind: string }).kind === 'aborted')).toHaveLength(1)
 
     // One interrupted assistant message (the partial) exists in the log.
-    const interrupted = [...agent.session.events]
+    const interrupted = [...agent.session.snapshotEvents()]
       .filter((e): e is SessionEvent<'assistant/message'> => e.type === 'assistant/message' && e.data.interrupted === true)
     expect(interrupted).toHaveLength(1)
     expect(interrupted[0]!.data.message.content.flatMap(b => b.type === 'text' ? [b.text] : []).join('')).toContain('forbidden')
@@ -159,7 +159,7 @@ describe('stream-rules guard: interrupt + retry', () => {
     expect(retryText).toContain('Write a note')
 
     // The turn regenerated to completion on the retry.
-    const assistants = [...agent.session.events]
+    const assistants = [...agent.session.snapshotEvents()]
       .filter((e): e is SessionEvent<'assistant/message'> => e.type === 'assistant/message' && e.data.interrupted !== true)
     expect(assistants.at(-1)!.data.message.content.flatMap(b => b.type === 'text' ? [b.text] : []).join('')).toBe('clean answer')
 
@@ -172,7 +172,7 @@ describe('stream-rules guard: interrupt + retry', () => {
       textResponse('still forbidden words here'),
     ])
     ctx.llm.registerAdapter(['mock'], adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Write sentences' }], source: { kind: 'user' } }))
     await settle(ctx, agent, adapter, 2)
 
@@ -181,7 +181,7 @@ describe('stream-rules guard: interrupt + retry', () => {
     expect(turnEnds(agent).filter(r => (r as { kind: string }).kind === 'aborted')).toHaveLength(1)
     expect(plugins(agent)).toHaveLength(1)
     expect(adapter.requests).toHaveLength(2)
-    const assistants = [...agent.session.events]
+    const assistants = [...agent.session.snapshotEvents()]
       .filter((e): e is SessionEvent<'assistant/message'> => e.type === 'assistant/message' && e.data.interrupted !== true)
     expect(assistants.at(-1)!.data.message.content.flatMap(b => b.type === 'text' ? [b.text] : []).join('')).toBe('still forbidden words here')
   })
@@ -198,7 +198,7 @@ describe('stream-rules guard: interrupt + retry', () => {
       textResponse('ok'),
     ])
     ctx.llm.registerAdapter(['mock'], adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await settle(ctx, agent, adapter, 2)
 
@@ -218,7 +218,7 @@ describe('stream-rules guard: non-interrupting tool rules', () => {
       textResponse('done'),
     ])
     ctx.llm.registerAdapter(['mock'], adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'call the probe' }], source: { kind: 'user' } }))
     await settle(ctx, agent, adapter, 2)
 
@@ -234,7 +234,7 @@ describe('stream-rules guard: non-interrupting tool rules', () => {
     expect(text).toContain('Never pass a secret value')
 
     // And the probe still executed normally (result flowed back).
-    const results = [...agent.session.events].filter(e => e.type === 'tool/result')
+    const results = [...agent.session.snapshotEvents()].filter(e => e.type === 'tool/result')
     expect(results).toHaveLength(1)
   })
 })
@@ -247,7 +247,7 @@ describe('stream-rules guard: discard mode', () => {
       textResponse('clean answer'),
     ])
     ctx.llm.registerAdapter(['mock'], adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Write a note' }], source: { kind: 'user' } }))
     await settle(ctx, agent, adapter, 2)
 

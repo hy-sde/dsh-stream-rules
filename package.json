@@ -1,6 +1,6 @@
 {
   "name": "dsh-stream-rules",
-  "version": "0.1.2-alpha.1",
+  "version": "0.1.2-rc.1",
   "private": true,
   "description": "Standalone public package: @hy-sde-org/dsh-stream-rules — time-traveling stream rules for DeepSeek Harness (abort the stream, inject the violated rule as a system reminder, retry from the same point).",
   "type": "module",
