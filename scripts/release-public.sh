@@ -71,7 +71,7 @@ for dir in "${packages[@]}"; do
 done
 
 for dir in "${packages[@]}"; do
-  (cd "$dir" && npm publish --registry "$registry" --access public)
+  (cd "$dir" && npm publish --registry "$registry" --access public --tag latest)
 done
 
 echo "published"
