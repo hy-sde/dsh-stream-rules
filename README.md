@@ -105,7 +105,7 @@ expressions against the model's own output inside your own agent process. See
 
 ## References
 
-- Notebook: the port plan and omp upstream pointers — `port_omp.md` item 3
+- Notebook: the port plan and omp upstream pointers.
 - Internal (for maintainers): the fork prototype at
   `packages/guard/stream-rules/` in
   `github.com/deepseek-ai/deepseek-harness` is the reference implementation
