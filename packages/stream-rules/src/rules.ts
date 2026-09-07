@@ -19,7 +19,8 @@
  *
  * Supported frontmatter keys: `name` (override; defaults to the file stem),
  * `description`, `globs`, `alwaysApply`, `condition` (string or string[]),
- * `scope` (string or string[]), `interruptMode`
+ * `scope` (string or string[]), `agents` (string or string[]; agent-name
+ * globs limiting which agents the rule applies to), `interruptMode`
  * (`never` | `prose-only` | `tool-only` | `always`). `astCondition` is parsed
  * but not yet supported — a rule whose only conditions are AST patterns is
  * rejected at registration (see {@link manager.ts}).
@@ -60,6 +61,12 @@ export interface Rule {
   astCondition?: string[]
   /** Optional stream scope tokens (for example: `text`, `thinking`, `tool:edit(*.ts)`). */
   scope?: string[]
+  /**
+   * Lowercased agent-name globs this rule applies to (absent = every agent).
+   * `main` targets the top-level session; other names target subagents running
+   * that agent definition.
+   */
+  agents?: string[]
   /** Per-rule interrupt mode override (falls back to the global setting). */
   interruptMode?: RuleInterruptMode
 }
@@ -377,6 +384,55 @@ export function parseRuleConditionAndScope(
 }
 
 // ---------------------------------------------------------------------------
+// Agent scoping (ported from omp's rule capability)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the `agents` frontmatter field into lowercased agent-name glob
+ * patterns. Reuses the scope tokenizer, so comma-separated spellings split the
+ * same way and `{a,b}` groups survive (whitespace around the comma is
+ * normalized for the glob compiler).
+ * @param value - raw frontmatter value (`string` or `string[]`).
+ * @returns deduplicated lowercased patterns, or `undefined` when absent/empty.
+ */
+export function parseRuleAgents(value: unknown): string[] | undefined {
+  const tokens = normalizeScopeField(value)
+  if (!tokens) {
+    return undefined
+  }
+  return Array.from(new Set(tokens.map(token => token.replace(/\s*,\s*/g, ',').toLowerCase())))
+}
+
+/** Agent name used for the top-level (non-subagent) session when evaluating `agents`. */
+export const MAIN_AGENT_RULE_NAME = 'main'
+
+/** Fallback agent name used for a subagent session with no recorded agent definition. */
+export const SUB_AGENT_RULE_NAME = 'sub'
+
+/**
+ * Whether a rule's `agents` scope admits `agentName`. A rule without `agents`
+ * applies to every agent; an unresolved `agentName` (`undefined`) disables
+ * scoping entirely, so a session whose agent cannot be determined never drops
+ * rules (upstream-compatible).
+ * @param rule - the rule (or a rule-shaped value) whose `agents` patterns are checked.
+ * @param agentName - the candidate agent definition name, or `undefined` when unknown.
+ * @returns true when the rule applies to that agent.
+ */
+export function ruleAppliesToAgent(rule: Pick<Rule, 'agents'>, agentName: string | undefined): boolean {
+  const patterns = rule.agents
+  if (!patterns || patterns.length === 0 || agentName === undefined) {
+    return true
+  }
+  const name = agentName.trim().toLowerCase()
+  return patterns.some((pattern) => {
+    if (pattern === name) {
+      return true
+    }
+    return compileGlob(pattern).match(name)
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Frontmatter + rule file loading
 // ---------------------------------------------------------------------------
 
@@ -389,6 +445,8 @@ export interface RuleFrontmatter {
   condition?: string | string[]
   astCondition?: string | string[]
   scope?: string | string[]
+  /** Agent-name globs this rule applies to; absent = every agent. */
+  agents?: string | string[]
   interruptMode?: RuleInterruptMode
 }
 
@@ -447,6 +505,7 @@ export function parseRuleFile(filePath: string, raw: string, absDir: string): Ru
     : undefined
   const conditionScope = parseRuleConditionAndScope(parsed)
   const globs = normalizeRuleField(parsed['globs'])
+  const agents = parseRuleAgents(parsed['agents'])
   const alwaysApply = typeof parsed['alwaysApply'] === 'boolean' ? parsed['alwaysApply'] : undefined
   const description = typeof parsed['description'] === 'string' && parsed['description'].length > 0
     ? parsed['description']
@@ -459,6 +518,7 @@ export function parseRuleFile(filePath: string, raw: string, absDir: string): Ru
     ...(globs === undefined ? {} : { globs }),
     ...(alwaysApply === undefined ? {} : { alwaysApply }),
     ...(description === undefined ? {} : { description }),
+    ...(agents === undefined ? {} : { agents }),
     ...(conditionScope.condition === undefined ? {} : { condition: conditionScope.condition }),
     ...(conditionScope.astCondition === undefined ? {} : { astCondition: conditionScope.astCondition }),
     ...(conditionScope.scope === undefined ? {} : { scope: conditionScope.scope }),

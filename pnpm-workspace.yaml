@@ -8,3 +8,4 @@ allowBuilds:
   node-pty: true
 minimumReleaseAgeExclude:
   - '@deepseek-ai/*'
+  - '@hy-sde-org/dsh-internal-urls@0.1.2-rc.1'

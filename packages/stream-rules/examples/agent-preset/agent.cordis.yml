@@ -46,6 +46,7 @@ order: 6
         content: Never leave a `debugger;` statement behind in committed code.
         condition: 'debugger\s*;?'
         scope: [text, thinking, tool:edit, tool:write]
+        agents: [main]
         interruptMode: always
       - name: no-secret-in-tool-args
         content: Never pass a real secret or API key as a tool-call argument.

@@ -98,9 +98,14 @@ Never commit or leave behind `console.log` / `console.debug` calls...
 | `globs` | File globs the rule applies to (matched against candidate file paths in tool-call arguments) |
 | `condition` | Regex pattern(s) that trigger the rule — `condition: "(?i)todo"` inline flags are translated to native `RegExp` flags |
 | `scope` | Streams the rule watches (see below) |
+| `agents` | Agent-name globs this rule applies to; `main` = the top-level session only (see [Agent scoping](#agent-scoping)) |
 | `interruptMode` | `always` · `prose-only` · `tool-only` · `never` (falls back to `config.interruptMode`) |
 | `alwaysApply` | Accepted for compatibility; static per-turn injection is not implemented yet |
 | `astCondition` | Parsed for compatibility; AST-pattern matching is not yet supported — a rule with only AST conditions is skipped with a warning |
+
+### Agent scoping
+
+`agents` limits a rule to matching agents; a rule without it applies to every agent. The top-level session is named `main` (`agents: [main]` means "top-level session only"). Subagent sessions are named by the agent preset they run — the agent definition name (e.g. `agents: [code-edit]`) — and fall back to `sub` when no preset was recorded. Values are case-insensitive agent-name globs using the same syntax as `globs`: `agents: [standard*]` names `standard` and `standard-worker`.
 
 ### Scope tokens
 
@@ -129,6 +134,8 @@ Rules may also be supplied directly in plugin config:
         scope: [text, tool:edit]
 ```
 
+Inline rules accept the same keys as file frontmatter, including `agents`.
+
 ### Repeat gating
 
 `repeatMode: once` (default) fires each rule at most once per session;
@@ -144,6 +151,35 @@ re-arm a rule that already fired.
 - `tool-only` — abort only on tool-argument matches; prose matches become
   advisory notices
 - `never` — never abort; every match is advisory
+
+## Reading rules as URLs (`rule://`)
+
+When the harness mounts the internal-URL subsystem (`ctx.internalUrls`, part
+of stock DeepSeek Harness), the read/grep tools can read the calling session's
+active rules:
+
+- `rule://<name>` — the full content of one active rule (frontmatter
+  stripped), with its `sourcePath` (the `.md` file, or `config:<name>` for
+  inline rules). Resolved content is marked **immutable** — a rule is
+  enforcement text, not an editable file.
+
+Error semantics:
+
+- `rule://` (no name) — `rule:// URL requires a rule name: rule://<name>`.
+- `rule://<name>/<path>` — `Invalid rule:// URL: rule://<name> takes no
+  path.`
+- unknown name — `Unknown rule: <name>`, followed by either
+  `Available in this session: <comma-separated names>` or, when the session
+  has no rules yet, `No rules are active for this session yet (rules load
+  from <cwd>/.dsh/rules at turn start).`
+- completions list every active rule name (with `description` when present).
+
+A rule is resolved against the **calling session** (subagents included), so a
+child agent sees only the rules its session actually registered — including
+agent-scoped filtering. Reading a rule never fires an interrupt: the guard
+loads rules at turn start, so the full text is available any time. If the
+internal-URL subsystem is not mounted, the guard still enforces rules as
+usual — only the `rule://` scheme is absent (registration is guarded).
 
 ## Repairing the interrupted turn
 

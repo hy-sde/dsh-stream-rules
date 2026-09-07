@@ -30,12 +30,15 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@hy-sde-org/dsh-internal-urls'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
-import type { AgentCancelCause, Session, SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
+import type { AgentCancelCause, Session, SessionEvent, SessionHeader, UserMessage } from '@deepseek-ai/dsh-session'
 import type { PostToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
+import { RuleProtocolHandler } from './rule-protocol.ts'
+import { StreamRulesRegistry } from './registry.ts'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import {
@@ -45,14 +48,22 @@ import {
 } from './manager.ts'
 import {
   listRuleFiles,
+  MAIN_AGENT_RULE_NAME,
+  parseRuleAgents,
   parseRuleConditionAndScope,
   parseRuleFile,
+  ruleAppliesToAgent,
+  SUB_AGENT_RULE_NAME,
   type Rule,
   type RuleInterruptMode,
 } from './rules.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'stream-rules'
+
+export { RuleProtocolHandler } from './rule-protocol.ts'
+export type { RuleProtocolDeps } from './rule-protocol.ts'
+export { StreamRulesRegistry } from './registry.ts'
 
 /** One inline rule supplied through plugin config instead of a rules file. */
 export interface InlineRuleConfig {
@@ -64,6 +75,8 @@ export interface InlineRuleConfig {
   condition?: string | string[]
   /** Optional scope narrowing doctor/module/category matches. */
   scope?: string | string[]
+  /** Optional agent-name globs limiting the rule to matching agents (absent = every agent). */
+  agents?: string | string[]
   /** Optional override of the composed interrupt mode for this rule. */
   interruptMode?: RuleInterruptMode
   /** Optional glob list restricting the rule to matching file paths. */
@@ -103,6 +116,7 @@ const InlineRuleConfig: z<InlineRuleConfig> = z.object({
   content: z.string(),
   condition: z.union([z.string(), z.array(z.string())]),
   scope: z.union([z.string(), z.array(z.string())]),
+  agents: z.union([z.string(), z.array(z.string())]),
   interruptMode: z.union([z.const('never'), z.const('prose-only'), z.const('tool-only'), z.const('always')]),
   globs: z.array(z.string()),
 })
@@ -119,6 +133,14 @@ export const Config: z<Config> = z.object({
 
 /** Prefix of the `hook` cancel reason this guard owns (recognized at turn end to schedule the retry). */
 const ABORT_REASON_PREFIX = 'stream-rules:'
+
+/**
+ * Per-session rules published for the host-plane `rule://` scheme handler.
+ * One instance per process: the plugin mounts as a single host-plane row in
+ * the base bundle, and each session's live getter is published on
+ * `agent/created`, removed on `agent/disposed`.
+ */
+const ruleRegistry = new StreamRulesRegistry()
 
 /** Escape text for the XML-ish reminder envelope. */
 function xmlEscape(value: string): string {
@@ -167,15 +189,58 @@ function inlineToRule(input: InlineRuleConfig): Rule {
     ...(input.condition !== undefined ? { condition: input.condition } : {}),
     ...(input.scope !== undefined ? { scope: input.scope } : {}),
   })
+  const agents = parseRuleAgents(input.agents)
   return {
     name: input.name.trim(),
     path: `config:${input.name.trim()}`,
     content: input.content,
     ...(conditionScope.condition === undefined ? {} : { condition: conditionScope.condition }),
     ...(conditionScope.scope === undefined ? {} : { scope: conditionScope.scope }),
+    ...(agents === undefined ? {} : { agents }),
     ...(input.globs === undefined || input.globs.length === 0 ? {} : { globs: input.globs }),
     ...(input.interruptMode === undefined ? {} : { interruptMode: input.interruptMode }),
   }
+}
+
+/**
+ * Resolve the agent definition name a session runs, for `agents:` scoping.
+ *
+ * A session maps 1:1 to an agent, and every agent is composed from one agent
+ * preset. The session header's durable `agentPreset` id is the fork's agent
+ * definition name (the preset id, e.g. `standard`), and `origin === 'subagent'`
+ * / `delegationDepth > 0` mark a subagent child. Mirroring upstream
+ * oh-my-pi's `MAIN_AGENT_RULE_NAME` / `SUB_AGENT_RULE_NAME`, the top-level
+ * session resolves to `main` regardless of preset, and a subagent resolves to
+ * its preset id or the `sub` fallback when it recorded none. The header is
+ * used rather than the live composition because it is already present on
+ * `SessionState` at `refreshRules` time (no wiring changes) and records the
+ * definition the session was created under; a mid-session preset switch
+ * (recompose) still scopes to the header's creation preset since the header
+ * is immutable.
+ * @param header - the session's durable header (`origin`, `delegationDepth`, `agentPreset`).
+ * @returns the lowercased agent name (`main`, the preset id, or `sub`).
+ */
+export function resolveAgentName(
+  header: Pick<SessionHeader, 'origin' | 'delegationDepth' | 'agentPreset'>,
+): string {
+  const isSubagent = header.origin === 'subagent' || (header.delegationDepth ?? 0) > 0
+  if (!isSubagent) {
+    return MAIN_AGENT_RULE_NAME
+  }
+  const preset = header.agentPreset?.trim().toLowerCase()
+  return preset !== undefined && preset.length > 0 ? preset : SUB_AGENT_RULE_NAME
+}
+
+/**
+ * Filter rules by agent scoping: a rule whose `agents` patterns do not admit
+ * `agentName` is dropped before registration, so a scoped rule can never
+ * trigger for another agent. An unresolved agent name drops nothing.
+ * @param rules - candidate rules.
+ * @param agentName - the session's agent definition name, or `undefined` when unknown.
+ * @returns the rules that apply to that agent, in input order.
+ */
+export function selectRulesForAgent(rules: readonly Rule[], agentName: string | undefined): Rule[] {
+  return rules.filter(rule => ruleAppliesToAgent(rule, agentName))
 }
 
 /** Normalize a candidate file path for glob matching: slashes, absolute, cwd-relative. */
@@ -259,6 +324,16 @@ export function apply(ctx: Context, config: Config): void {
   const repeatMode = config.repeatMode ?? 'once'
   const repeatGap = config.repeatGap ?? 10
   const inlineRules = (config.rules ?? []).map(inlineToRule)
+  // The `rule://` internal-URL scheme registers into the shared registry
+  // exactly once per process: this plugin mounts as one host-plane row, and
+  // `ctx.inject` keeps compositions without the registry unaffected. The
+  // handler answers for ANY session key — subagents included, whose Agents
+  // publish their own state — via the module-level registry above.
+  ctx.inject(['internalUrls'], (iuCtx) => {
+    iuCtx.effect(() => iuCtx.internalUrls.register(new RuleProtocolHandler({
+      rulesFor: sessionKey => ruleRegistry.rulesFor(sessionKey),
+    })))
+  })
 
   const sessions = new WeakMap<Session, SessionState>()
 
@@ -288,11 +363,15 @@ export function apply(ctx: Context, config: Config): void {
     const manager = state.manager
     const previous = state.fileRules
     const next = new Map<string, Rule>()
+    // Agent scoping is resolved once per refresh: rules that do not apply to
+    // this session's agent are dropped before registration (never at match
+    // time), mirroring upstream's bucketRules precedence.
+    const agentName = resolveAgentName(state.session.header)
 
     // Inline rules are registered before any file I/O, so an inline-only
     // configuration is live from the very first chunk with no async window.
     manager.clearRules()
-    for (const rule of inlineRules) {
+    for (const rule of selectRulesForAgent(inlineRules, agentName)) {
       manager.addRule(rule)
     }
 
@@ -331,10 +410,10 @@ export function apply(ctx: Context, config: Config): void {
     // Rebuild the manager's table; injection records are preserved inside the
     // manager (clearRules does not touch them).
     manager.clearRules()
-    for (const rule of inlineRules) {
+    for (const rule of selectRulesForAgent(inlineRules, agentName)) {
       manager.addRule(rule)
     }
-    for (const rule of next.values()) {
+    for (const rule of selectRulesForAgent([...next.values()], agentName)) {
       manager.addRule(rule)
     }
 
@@ -558,6 +637,7 @@ export function apply(ctx: Context, config: Config): void {
         toolCalls: new Map(),
       }
       sessions.set(agent.session, state)
+      ruleRegistry.publish(agent.session.header.id, () => state.manager.getRules())
       void refreshRules(state).catch((error: unknown) => {
         ctx.logger.warn('stream-rules: initial rule load failed', { session: agent.session.id, error: String(error) })
       })
@@ -567,6 +647,7 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   ctx.on('agent/disposed', ({ agent }) => {
+    ruleRegistry.unpublish(agent.session.header.id)
     sessions.delete(agent.session)
   })
 
